@@ -157,18 +157,6 @@ Machine learning will be introduced only when it helps answer a research questio
 
 ---
 
-# Project Rules
-
-1. No unnecessary complexity.
-2. No feature without purpose.
-3. Every experiment must be reproducible.
-4. Every experiment must be documented.
-5. Every architectural decision must be recorded.
-6. Curiosity is more important than speed.
-7. Understanding is more important than code.
-
----
-
 # Milestones
 
 ## Milestone 1

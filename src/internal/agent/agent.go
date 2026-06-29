@@ -30,6 +30,27 @@ type Agent struct {
 	State  State
 	Sensor Sensor
 	Tick   time.Duration
+
+	// Everything below is optional. A zero-value Agent (Communicator ==
+	// nil) behaves identically to the Milestone 1 agent — networking is
+	// additive, never a hard requirement of being an agent at all.
+	Communicator      Communicator
+	Peers             []string
+	HeartbeatInterval time.Duration
+	Neighbors         *NeighborList
+}
+
+// WithNetwork attaches networking to an already-constructed agent and
+// returns it for chaining. Calling this is what turns a Milestone 1
+// agent into a Milestone 2 agent — nothing about State or the decision
+// loop changes; this only adds a second, independent activity (talking
+// to peers) alongside the first (reasoning about itself).
+func (a *Agent) WithNetwork(comm Communicator, peers []string, heartbeatInterval time.Duration) *Agent {
+	a.Communicator = comm
+	a.Peers = peers
+	a.HeartbeatInterval = heartbeatInterval
+	a.Neighbors = NewNeighborList()
+	return a
 }
 
 // New creates an agent with empty initial state. Status starts at Calm
@@ -47,31 +68,94 @@ func New(id string, sensor Sensor, tick time.Duration) *Agent {
 	}
 }
 
-// Run is the agent's loop, matching the README's seven-step cycle —
-// minus steps 3/4 (share / receive neighbor updates), which don't exist
-// until there's a Communicator in Milestone 2:
+// Run is the agent's loop, matching the README's seven-step cycle.
+// With networking attached, steps 3 and 4 (share / receive neighbor
+// updates) are now real:
 //
 //  1. Observe local environment      -> Sensor.Read()
 //  2. Update internal state          -> State.Observe()
+//  3. Share relevant info w/ peers   -> broadcastHeartbeat() (if networked)
+//  4. Receive neighbor updates       -> receiveHeartbeat() (if networked)
 //  5. Adjust confidence              -> done inside State.Observe()
 //  6. Decide whether action needed   -> act()
 //  7. Return to observation          -> loop
+//
+// Sensing and heartbeating run on independent timers, not the same one.
+// "How often do I look at the world" and "how often do I tell others
+// what I think" are different questions with different right answers —
+// collapsing them into one tick rate would hide that they're separate
+// design knobs.
 func (a *Agent) Run(ctx context.Context) {
-	ticker := time.NewTicker(a.Tick)
-	defer ticker.Stop()
+	senseTicker := time.NewTicker(a.Tick)
+	defer senseTicker.Stop()
+
+	var incoming <-chan Heartbeat
+	var heartbeatC <-chan time.Time
+
+	if a.Communicator != nil {
+		incoming = a.Communicator.Listen(ctx)
+
+		interval := a.HeartbeatInterval
+		if interval == 0 {
+			interval = a.Tick
+		}
+		heartbeatTicker := time.NewTicker(interval)
+		defer heartbeatTicker.Stop()
+		heartbeatC = heartbeatTicker.C
+	}
+	// If a.Communicator is nil, incoming and heartbeatC stay nil. A nil
+	// channel in a select simply never fires — Go's idiomatic way of
+	// saying "this case doesn't exist for this agent."
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case t := <-ticker.C:
+		case t := <-senseTicker.C:
 			a.State.Observe(Observation{
 				Timestamp: t,
 				Value:     a.Sensor.Read(),
 			})
 			a.act()
+		case <-heartbeatC:
+			a.broadcastHeartbeat()
+		case hb, ok := <-incoming:
+			if !ok {
+				incoming = nil // communicator shut down; stop selecting on it
+				continue
+			}
+			a.receiveHeartbeat(hb)
 		}
 	}
+}
+
+// broadcastHeartbeat tells every known peer the agent's current
+// conclusion about itself — and nothing else. This is the only place in
+// the codebase where local state crosses the network boundary, and it
+// crosses deliberately narrow: three fields, not the whole State struct.
+func (a *Agent) broadcastHeartbeat() {
+	hb := Heartbeat{
+		ID:          a.State.ID,
+		Status:      a.State.Status.String(),
+		DangerScore: a.State.DangerScore,
+		Timestamp:   time.Now(),
+	}
+	for _, peer := range a.Peers {
+		if err := a.Communicator.Send(peer, hb); err != nil {
+			log.Printf("[%s] could not reach peer %s: %v", a.State.ID, peer, err)
+		}
+	}
+}
+
+// receiveHeartbeat folds an incoming peer heartbeat into local neighbor
+// knowledge. Note what this does NOT do: it never touches a.State. A
+// peer's danger score updating this agent's own danger score is
+// cooperation (Objective 4), which doesn't exist yet — for now, hearing
+// from a neighbor only updates what's known about that neighbor.
+func (a *Agent) receiveHeartbeat(hb Heartbeat) {
+	a.Neighbors.Update(hb)
+	log.Printf("[%s] heard from %s: status=%s danger=%.3f",
+		a.State.ID, hb.ID, hb.Status, hb.DangerScore)
 }
 
 // act is deliberately the only place that does anything visible to the

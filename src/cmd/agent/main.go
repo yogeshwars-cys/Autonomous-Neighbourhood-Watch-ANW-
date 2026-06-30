@@ -21,8 +21,8 @@ func main() {
 	spikeProb := flag.Float64("spike-prob", 0.05, "chance per tick of an injected anomaly")
 
 	listen := flag.String("listen", "", "UDP address to listen on for peer heartbeats, e.g. :9001 (empty = networking disabled)")
-	peers := flag.String("peers", "", "comma-separated peer UDP addresses, e.g. 127.0.0.1:9002,127.0.0.1:9003")
-	heartbeat := flag.Duration("heartbeat", time.Second, "how often to broadcast a heartbeat to peers")
+	peers := flag.String("peers", "", "comma-separated SEED peer UDP addresses (just a bootstrap — more peers are discovered automatically via gossip), e.g. 127.0.0.1:9002")
+	heartbeat := flag.Duration("heartbeat", time.Second, "how often to broadcast a heartbeat to known peers")
 
 	flag.Parse()
 

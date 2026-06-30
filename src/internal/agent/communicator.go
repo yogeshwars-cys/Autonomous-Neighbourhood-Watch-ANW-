@@ -14,11 +14,32 @@ import (
 // agent's *conclusion* (Status, DangerScore), never its evidence. This
 // is a real, deliberate answer to Objective 3's question "what should
 // agents communicate?" — not an oversight.
+//
+// KnownPeers is the one addition Milestone 3 makes: alongside the
+// agent's own conclusion, it piggybacks its current address book, so
+// peer addresses can propagate through the network without ever being
+// typed into a config file. This is a real tradeoff — Objective 3's
+// "at what cost?" question — trading a slightly larger packet for the
+// ability to discover peers nobody told you about directly. It's also
+// exactly how production gossip protocols like SWIM piggyback
+// membership updates on ordinary pings, rather than running a separate
+// discovery channel.
 type Heartbeat struct {
-	ID          string    `json:"id"`
-	Status      string    `json:"status"`
-	DangerScore float64   `json:"danger_score"`
-	Timestamp   time.Time `json:"timestamp"`
+	ID          string            `json:"id"`
+	Status      string            `json:"status"`
+	DangerScore float64           `json:"danger_score"`
+	Timestamp   time.Time         `json:"timestamp"`
+	KnownPeers  map[string]string `json:"known_peers,omitempty"`
+
+	// SourceAddr is the UDP address a packet actually arrived from. It
+	// is set locally by Listen() after receipt and is never part of the
+	// wire format (json:"-"). This is deliberate: an agent's reachable
+	// address is determined by the network itself, not by anything a
+	// peer claims about itself in the message body — a small, early
+	// defense against a peer lying about where it lives. (A peer could
+	// still lie about OTHER peers in KnownPeers — that's a real gap,
+	// left for Objective 5 / the README's "malicious node" experiment.)
+	SourceAddr string `json:"-"`
 }
 
 // Communicator is an agent's only connection to its peers — the network
@@ -81,7 +102,7 @@ func (c *UDPCommunicator) Listen(ctx context.Context) <-chan Heartbeat {
 			// A short read deadline lets this loop notice ctx.Done()
 			// promptly instead of blocking forever on a socket read.
 			c.conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-			n, _, err := c.conn.ReadFromUDP(buf)
+			n, addr, err := c.conn.ReadFromUDP(buf)
 			if err != nil {
 				continue // timeout, or a transient error — just retry
 			}
@@ -93,6 +114,10 @@ func (c *UDPCommunicator) Listen(ctx context.Context) <-chan Heartbeat {
 				// small) act of self-defense — Objective 5 will build on it.
 				continue
 			}
+			// addr is ground truth from the OS/kernel, not a claim inside
+			// the packet — this is what makes passive discovery (learning
+			// a peer's address just from hearing from them) trustworthy.
+			hb.SourceAddr = addr.String()
 
 			select {
 			case out <- hb:

@@ -53,3 +53,42 @@ func (n *NeighborList) Get(id string) (*Neighbor, bool) {
 	nb, ok := n.peers[id]
 	return nb, ok
 }
+
+// DeadPeers returns the IDs of neighbors that haven't been seen within threshold.
+func (n *NeighborList) DeadPeers(threshold time.Duration) []string {
+	var dead []string
+	now := time.Now()
+	for id, nb := range n.peers {
+		if now.Sub(nb.LastSeen) > threshold {
+			dead = append(dead, id)
+		}
+	}
+	return dead
+}
+
+// AlivePeers returns the IDs of neighbors that are still considered alive.
+func (n *NeighborList) AlivePeers(threshold time.Duration) []string {
+	var alive []string
+	now := time.Now()
+	for id, nb := range n.peers {
+		if now.Sub(nb.LastSeen) <= threshold {
+			alive = append(alive, id)
+		}
+	}
+	return alive
+}
+
+// IsAlive checks if a specific peer is considered alive.
+func (n *NeighborList) IsAlive(id string, threshold time.Duration) bool {
+	nb, ok := n.peers[id]
+	if !ok {
+		return false
+	}
+	return time.Since(nb.LastSeen) <= threshold
+}
+
+// Count returns the number of tracked neighbors.
+func (n *NeighborList) Count() int {
+	return len(n.peers)
+}
+

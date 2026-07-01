@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 )
@@ -46,6 +47,11 @@ type Agent struct {
 	HeartbeatInterval time.Duration
 	Neighbors         *NeighborList
 	AddressBook       *AddressBook
+
+	// StaleThreshold is how long we wait without a heartbeat from a neighbor
+	// before treating them as dead/unreachable.
+	StaleThreshold time.Duration
+	lastKnownDead  map[string]bool
 }
 
 // WithNetwork attaches networking to an already-constructed agent and
@@ -58,6 +64,14 @@ func (a *Agent) WithNetwork(comm Communicator, seeds []string, heartbeatInterval
 	a.HeartbeatInterval = heartbeatInterval
 	a.Neighbors = NewNeighborList()
 	a.AddressBook = NewAddressBook()
+
+	interval := heartbeatInterval
+	if interval == 0 {
+		interval = a.Tick
+	}
+	a.StaleThreshold = 6 * interval
+	a.lastKnownDead = make(map[string]bool)
+
 	return a
 }
 
@@ -101,6 +115,7 @@ func (a *Agent) Run(ctx context.Context) {
 
 	var incoming <-chan Heartbeat
 	var heartbeatC <-chan time.Time
+	var failureCheckC <-chan time.Time
 
 	if a.Communicator != nil {
 		incoming = a.Communicator.Listen(ctx)
@@ -112,10 +127,14 @@ func (a *Agent) Run(ctx context.Context) {
 		heartbeatTicker := time.NewTicker(interval)
 		defer heartbeatTicker.Stop()
 		heartbeatC = heartbeatTicker.C
+
+		// Check liveness twice as fast as the threshold for responsiveness
+		failureCheckTicker := time.NewTicker(a.StaleThreshold / 2)
+		defer failureCheckTicker.Stop()
+		failureCheckC = failureCheckTicker.C
 	}
-	// If a.Communicator is nil, incoming and heartbeatC stay nil. A nil
-	// channel in a select simply never fires — Go's idiomatic way of
-	// saying "this case doesn't exist for this agent."
+	// If a.Communicator is nil, incoming, heartbeatC and failureCheckC stay nil.
+	// A nil channel in a select simply never fires.
 
 	for {
 		select {
@@ -129,12 +148,38 @@ func (a *Agent) Run(ctx context.Context) {
 			a.act()
 		case <-heartbeatC:
 			a.broadcastHeartbeat()
+		case <-failureCheckC:
+			a.checkNeighborLiveness()
 		case hb, ok := <-incoming:
 			if !ok {
 				incoming = nil // communicator shut down; stop selecting on it
 				continue
 			}
 			a.receiveHeartbeat(hb)
+		}
+	}
+}
+
+func (a *Agent) checkNeighborLiveness() {
+	dead := a.Neighbors.DeadPeers(a.StaleThreshold)
+	deadMap := make(map[string]bool)
+	for _, id := range dead {
+		deadMap[id] = true
+		if !a.lastKnownDead[id] {
+			lastSeenStr := "never"
+			if nb, ok := a.Neighbors.Get(id); ok {
+				lastSeenStr = fmt.Sprintf("%.1fs ago", time.Since(nb.LastSeen).Seconds())
+			}
+			log.Printf("[%s] ☠ peer %s is UNREACHABLE (last seen %s)", a.State.ID, id, lastSeenStr)
+			a.lastKnownDead[id] = true
+		}
+	}
+
+	// Check for recovery: if it was in lastKnownDead but isn't in deadMap
+	for id := range a.lastKnownDead {
+		if !deadMap[id] {
+			log.Printf("[%s] ✓ peer %s has RECOVERED", a.State.ID, id)
+			delete(a.lastKnownDead, id)
 		}
 	}
 }

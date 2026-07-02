@@ -1,0 +1,153 @@
+# PLAN_2.md
+
+# Autonomous Cognition
+
+> "Giving every autonomous agent the ability to think."
+
+---
+
+## Mission
+
+Build intelligent autonomous agents that can understand, remember, plan, and explain their actions while remaining completely decentralized.
+
+The focus shifts from networking to cognition.
+
+---
+
+## Primary Objectives
+
+### Objective 8 — Semantic Perception
+
+**Questions:**
+
+- How should observations be represented?
+- What is an event?
+- How can raw sensor values become meaningful knowledge?
+
+**Deliverables:**
+
+- Event model
+- Semantic observations
+- Event classification
+
+---
+
+### Objective 9 — Memory
+
+**Questions:**
+
+- What should an agent remember?
+- What should it forget?
+- How should experience influence future behaviour?
+
+**Deliverables:**
+
+- Working memory
+- Episodic memory
+- Long-term memory
+- Forgetting mechanisms
+
+---
+
+### Objective 10 — World Model
+
+**Questions:**
+
+- How should an agent represent its environment?
+- What relationships matter?
+- How can incomplete knowledge be represented?
+
+**Deliverables:**
+
+- Local knowledge graph
+- Infrastructure model
+- Entity relationships
+
+---
+
+### Objective 11 — Planning
+
+**Questions:**
+
+- How are goals generated?
+- How are actions selected?
+- How should plans change during execution?
+
+**Deliverables:**
+
+- Goal generation
+- Task planning
+- Plan execution
+- Replanning
+
+---
+
+### Objective 12 — Reflection
+
+**Questions:**
+
+- What defines success?
+- How should failures be analysed?
+- How should trust evolve after experience?
+
+**Deliverables:**
+
+- Self evaluation
+- Experience summaries
+- Behaviour improvement
+
+---
+
+### Objective 13 — Explainability
+
+**Questions:**
+
+- Why was a decision made?
+- Can another agent understand it?
+- Can a human inspect it?
+
+**Deliverables:**
+
+- Decision traces
+- Reasoning logs
+- Explainable planning
+
+---
+
+## Milestones
+
+### Milestone 6
+
+Semantic events
+
+---
+
+### Milestone 7
+
+Memory
+
+---
+
+### Milestone 8
+
+Knowledge graph
+
+---
+
+### Milestone 9
+
+Planning engine
+
+---
+
+### Milestone 10
+
+Reflection
+
+---
+
+### Milestone 11
+
+Explainability
+
+---

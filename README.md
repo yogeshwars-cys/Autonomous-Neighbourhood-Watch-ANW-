@@ -135,7 +135,7 @@ Large-scale topology simulation.
 
 # Long-Term Vision
 
-Autonomous Neighbourhood Watch is intended to become the foundational building block for future research into decentralized adaptive systems.
+Autonomous Neighbourhood Watch is intended to become my foundational building block for future research into decentralized adaptive systems.
 
 Rather than solving cybersecurity directly, the project focuses on understanding the principles that allow autonomous agents to cooperate without centralized control.
 

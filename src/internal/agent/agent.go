@@ -52,6 +52,11 @@ type Agent struct {
 	// before treating them as dead/unreachable.
 	StaleThreshold time.Duration
 	lastKnownDead  map[string]bool
+
+	// Trust tracks how much this agent trusts each peer, learned from
+	// whether peers' reports agree with cooperative consensus. Added
+	// in Milestone 5 — cooperation requires networking.
+	Trust *TrustTable
 }
 
 // WithNetwork attaches networking to an already-constructed agent and
@@ -71,6 +76,7 @@ func (a *Agent) WithNetwork(comm Communicator, seeds []string, heartbeatInterval
 	}
 	a.StaleThreshold = 6 * interval
 	a.lastKnownDead = make(map[string]bool)
+	a.Trust = NewTrustTable()
 
 	return a
 }
@@ -145,6 +151,7 @@ func (a *Agent) Run(ctx context.Context) {
 				Timestamp: t,
 				Value:     a.Sensor.Read(),
 			})
+			a.cooperate()
 			a.act()
 		case <-heartbeatC:
 			a.broadcastHeartbeat()
@@ -261,7 +268,46 @@ func (a *Agent) receiveHeartbeat(hb Heartbeat) {
 // outside world right now. "Action" for Milestone 1 just means logging
 // its own reasoning — there's nowhere else to send it yet, and that's
 // fine: Objective 1 only asks for local decisions, not consequences.
+// Milestone 5 adds the cooperative score alongside the local one.
 func (a *Agent) act() {
 	last := a.State.History[len(a.State.History)-1]
-	log.Printf("[%s] obs=%.3f %s", a.State.ID, last.Value, a.State.Explain())
+	if a.Trust != nil && a.State.CooperativeDanger > 0 {
+		log.Printf("[%s] obs=%.3f %s %s", a.State.ID, last.Value,
+			a.State.Explain(),
+			fmt.Sprintf("coop=%.3f", a.State.CooperativeDanger))
+	} else {
+		log.Printf("[%s] obs=%.3f %s", a.State.ID, last.Value, a.State.Explain())
+	}
+}
+
+// cooperate builds peer signals from the current neighbor list,
+// computes the cooperative danger score, and updates status based
+// on the blended result. This is the integration point between the
+// self-contained cooperation module and the live agent loop.
+func (a *Agent) cooperate() {
+	if a.Trust == nil || a.Neighbors == nil {
+		return // no networking — cooperation is a no-op
+	}
+
+	all := a.Neighbors.All()
+	if len(all) == 0 {
+		return // no neighbors yet — nothing to cooperate with
+	}
+
+	peers := make([]PeerSignal, len(all))
+	for i, nb := range all {
+		peers[i] = PeerSignal{
+			ID:          nb.ID,
+			DangerScore: nb.DangerScore,
+			Live:        a.Neighbors.IsAlive(nb.ID, a.StaleThreshold),
+		}
+	}
+
+	a.State.CooperativeDanger = Cooperate(a.State.DangerScore, peers, a.Trust)
+
+	// Re-evaluate status against the cooperative score instead of just
+	// the local score — this is the moment where peer influence actually
+	// changes this agent's behavior, closing the gap that existed since
+	// Milestone 2.
+	a.State.updateStatusFromCooperative()
 }

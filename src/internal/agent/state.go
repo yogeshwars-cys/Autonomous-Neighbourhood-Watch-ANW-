@@ -46,6 +46,11 @@ type State struct {
 	Baseline    float64 // running expectation of "normal", learned locally
 	History     []Observation
 	LastUpdated time.Time
+
+	// CooperativeDanger is the blended danger score incorporating peer
+	// signals via trust-weighted cooperation. Zero when no peers are
+	// available (Milestone 1 behavior). Added in Milestone 5.
+	CooperativeDanger float64
 }
 
 const historyLimit = 50
@@ -65,4 +70,23 @@ func clamp(v, min, max float64) float64 {
 		return max
 	}
 	return v
+}
+
+// updateStatusFromCooperative re-evaluates the agent's status using
+// CooperativeDanger instead of the raw local DangerScore. This is
+// the moment where Milestone 5's cooperation actually takes effect:
+// a peer's alarm can push this agent into WATCHING or ALERT even if
+// its own local sensor is calm.
+func (s *State) updateStatusFromCooperative() {
+	if s.CooperativeDanger == 0 {
+		return // no cooperation data — keep status from local reasoning
+	}
+	switch {
+	case s.CooperativeDanger >= alertThreshold:
+		s.Status = StatusAlert
+	case s.CooperativeDanger >= watchThreshold:
+		s.Status = StatusWatching
+	default:
+		s.Status = StatusCalm
+	}
 }

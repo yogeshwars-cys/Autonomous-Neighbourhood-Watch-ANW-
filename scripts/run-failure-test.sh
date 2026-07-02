@@ -122,7 +122,7 @@ echo
 echo "=== Discovery (gossip convergence before kill) ==="
 for i in $(seq 1 "$N"); do
   ID="node-$i"
-  COUNT=$(grep -c "discovered new peer" "$LOG_DIR/${ID}.log" 2>/dev/null || echo 0)
+  COUNT=$(grep -c "discovered new peer" "$LOG_DIR/${ID}.log" 2>/dev/null | tr -d '\r' || echo 0)
   echo "  $ID discovered $COUNT peer(s)"
 done
 
@@ -131,7 +131,7 @@ echo "=== ☠ Failure Detection (who noticed node-${KILL_NODE} went down?) ==="
 for i in $(seq 1 "$N"); do
   if [ "$i" -eq "$KILL_NODE" ]; then continue; fi
   ID="node-$i"
-  DETECTED=$(grep -c "UNREACHABLE" "$LOG_DIR/${ID}.log" 2>/dev/null || echo 0)
+  DETECTED=$(grep -c "UNREACHABLE" "$LOG_DIR/${ID}.log" 2>/dev/null | tr -d '\r' || echo 0)
   if [ "$DETECTED" -gt 0 ]; then
     FIRST=$(grep "UNREACHABLE" "$LOG_DIR/${ID}.log" | head -1)
     echo "  ☠ $ID detected failure ($DETECTED events)"
@@ -146,7 +146,7 @@ echo "=== ✓ Recovery Detection (who noticed node-${KILL_NODE} came back?) ==="
 for i in $(seq 1 "$N"); do
   if [ "$i" -eq "$KILL_NODE" ]; then continue; fi
   ID="node-$i"
-  RECOVERED=$(grep -c "RECOVERED" "$LOG_DIR/${ID}.log" 2>/dev/null || echo 0)
+  RECOVERED=$(grep -c "RECOVERED" "$LOG_DIR/${ID}.log" 2>/dev/null | tr -d '\r' || echo 0)
   if [ "$RECOVERED" -gt 0 ]; then
     FIRST=$(grep "RECOVERED" "$LOG_DIR/${ID}.log" | head -1)
     echo "  ✓ $ID detected recovery"
@@ -160,7 +160,7 @@ echo
 echo "=== Restarted node-${KILL_NODE} re-discovery ==="
 RESTART_LOG="$LOG_DIR/node-${KILL_NODE}-restarted.log"
 if [ -f "$RESTART_LOG" ]; then
-  COUNT=$(grep -c "discovered new peer" "$RESTART_LOG" 2>/dev/null || echo 0)
+  COUNT=$(grep -c "discovered new peer" "$RESTART_LOG" 2>/dev/null | tr -d '\r' || echo 0)
   echo "  node-${KILL_NODE} (restarted) re-discovered $COUNT peer(s)"
   grep "discovered new peer" "$RESTART_LOG" 2>/dev/null | while read -r line; do
     echo "    └─ $line"

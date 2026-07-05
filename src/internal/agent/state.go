@@ -51,6 +51,12 @@ type State struct {
 	// signals via trust-weighted cooperation. Zero when no peers are
 	// available (Milestone 1 behavior). Added in Milestone 5.
 	CooperativeDanger float64
+
+	// Adaptive holds Objective 7's volatility-driven thresholds. Nil by
+	// default (see EnableAdaptiveThresholds in adaptive.go) so every
+	// State from Milestones 1-5 keeps behaving exactly as before unless
+	// an agent explicitly opts in.
+	Adaptive *AdaptiveThresholds
 }
 
 const historyLimit = 50
@@ -81,10 +87,11 @@ func (s *State) updateStatusFromCooperative() {
 	if s.CooperativeDanger == 0 {
 		return // no cooperation data — keep status from local reasoning
 	}
+	watch, alert := s.effectiveThresholds()
 	switch {
-	case s.CooperativeDanger >= alertThreshold:
+	case s.CooperativeDanger >= alert:
 		s.Status = StatusAlert
-	case s.CooperativeDanger >= watchThreshold:
+	case s.CooperativeDanger >= watch:
 		s.Status = StatusWatching
 	default:
 		s.Status = StatusCalm

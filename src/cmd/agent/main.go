@@ -24,6 +24,9 @@ func main() {
 	peers := flag.String("peers", "", "comma-separated SEED peer UDP addresses (just a bootstrap — more peers are discovered automatically via gossip), e.g. 127.0.0.1:9002")
 	heartbeat := flag.Duration("heartbeat", time.Second, "how often to broadcast a heartbeat to known peers")
 
+	adaptive := flag.Bool("adaptive", false, "Objective 7: enable volatility-driven adaptive watch/alert thresholds instead of fixed ones")
+	pictureInterval := flag.Duration("picture-interval", 0, "Milestone 5 Extended: how often to log this agent's NetworkPicture (0 = disabled)")
+
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -31,6 +34,14 @@ func main() {
 
 	sensor := agent.NewSyntheticSensor(10.0, 1.0, *spikeProb, 8.0)
 	a := agent.New(*id, sensor, *tick)
+
+	if *adaptive {
+		a.State.EnableAdaptiveThresholds()
+		log.Printf("[%s] adaptive thresholds enabled", *id)
+	}
+	if *pictureInterval > 0 {
+		a.PictureInterval = *pictureInterval
+	}
 
 	if *listen != "" {
 		comm, err := agent.NewUDPCommunicator(*listen)

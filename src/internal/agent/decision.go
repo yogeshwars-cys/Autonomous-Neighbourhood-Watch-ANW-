@@ -3,10 +3,12 @@ package agent
 import "math"
 
 // Tuning constants for the local reasoning. These are deliberately simple
-// and deliberately named — Milestone 1's goal is "an agent that decides
-// something, and can explain why," not a good anomaly detector. Better
-// reasoning is a later research question (Objective 7 — Adaptive Behaviour),
-// not something to smuggle in early.
+// and deliberately named — Milestone 1's goal was "an agent that decides
+// something, and can explain why," not a good anomaly detector. They
+// remain the FIXED defaults every agent starts from; Objective 7
+// (Adaptive Behaviour, Objective 7) builds volatility-aware thresholds
+// on top of them in adaptive.go rather than replacing them outright —
+// see AdaptiveThresholds.BaseWatch/BaseAlert.
 const (
 	// watchThreshold / alertThreshold turn a continuous danger score into
 	// a discrete status. Two thresholds instead of one means the agent has
@@ -58,15 +60,24 @@ func (s *State) Observe(obs Observation) {
 	// not silently absorbed in the same step.
 	s.Baseline = s.Baseline*(1-baselineAlpha) + obs.Value*baselineAlpha
 
+	// Objective 7: if adaptive thresholds are enabled, feed this tick's
+	// DangerScore into the volatility tracker BEFORE evaluating status,
+	// so a sudden spike immediately widens tolerance for the tick that
+	// caused it, not one tick later.
+	if s.Adaptive != nil {
+		s.Adaptive.Update(s.DangerScore)
+	}
+
 	s.updateStatus()
 	s.LastUpdated = obs.Timestamp
 }
 
 func (s *State) updateStatus() {
+	watch, alert := s.effectiveThresholds()
 	switch {
-	case s.DangerScore >= alertThreshold:
+	case s.DangerScore >= alert:
 		s.Status = StatusAlert
-	case s.DangerScore >= watchThreshold:
+	case s.DangerScore >= watch:
 		s.Status = StatusWatching
 	default:
 		s.Status = StatusCalm

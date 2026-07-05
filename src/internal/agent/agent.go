@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -57,6 +58,38 @@ type Agent struct {
 	// whether peers' reports agree with cooperative consensus. Added
 	// in Milestone 5 — cooperation requires networking.
 	Trust *TrustTable
+
+	// Memory is this agent's episodic event log (Objective 7 /
+	// Objective 9) — always present, unlike Trust/Communicator, because
+	// remembering your OWN significant history doesn't require a
+	// network. See memory.go.
+	Memory *EpisodicMemory
+
+	// PeerEvents is this agent's independently-assembled slice of the
+	// network's situational picture (Milestone 5 Extended): significant events
+	// heard about each peer, keyed by origin ID, via selective gossip
+	// (gossip.go). Nil until WithNetwork attaches it — collective
+	// awareness is meaningless without peers to be aware of.
+	PeerEvents map[string][]EventDigest
+
+	// relayQueue holds event digests heard from peers that are still
+	// eligible for further relay (Hops < maxRelayHops). Drained into
+	// the next outgoing heartbeat, then refilled as new digests arrive.
+	relayQueue []EventDigest
+
+	// PictureInterval, if non-zero, makes Run() periodically log
+	// NetworkPicture() — useful for simulation harnesses observing
+	// long-run emergent behavior (Milestone 5 Extended) without instrumenting
+	// every call site by hand. Zero (the default) disables it.
+	PictureInterval time.Duration
+
+	// prevStatus / alertStreak / sustainedRecorded track status
+	// transitions tick-to-tick so recordMemory (memory.go integration,
+	// below) can classify Events without re-deriving history from
+	// State.History each time.
+	prevStatus        Status
+	alertStreak       int
+	sustainedRecorded bool
 }
 
 // WithNetwork attaches networking to an already-constructed agent and
@@ -77,6 +110,7 @@ func (a *Agent) WithNetwork(comm Communicator, seeds []string, heartbeatInterval
 	a.StaleThreshold = 6 * interval
 	a.lastKnownDead = make(map[string]bool)
 	a.Trust = NewTrustTable()
+	a.PeerEvents = make(map[string][]EventDigest)
 
 	return a
 }
@@ -91,8 +125,10 @@ func New(id string, sensor Sensor, tick time.Duration) *Agent {
 			ID:     id,
 			Status: StatusCalm,
 		},
-		Sensor: sensor,
-		Tick:   tick,
+		Sensor:     sensor,
+		Tick:       tick,
+		Memory:     NewEpisodicMemory(),
+		prevStatus: StatusCalm,
 	}
 }
 
@@ -100,14 +136,15 @@ func New(id string, sensor Sensor, tick time.Duration) *Agent {
 // With networking attached, steps 3 and 4 (share / receive neighbor
 // updates) are now real — and as of Milestone 3, "share" and "receive"
 // also grow the agent's address book, not just its picture of who's
-// healthy:
+// healthy. As of Objective 7/7, they also grow episodic memory and the
+// network's collective picture (see recordMemory, ingestEvents):
 //
 //  1. Observe local environment      -> Sensor.Read()
-//  2. Update internal state          -> State.Observe()
-//  3. Share relevant info w/ peers   -> broadcastHeartbeat() (if networked)
-//  4. Receive neighbor updates       -> receiveHeartbeat() (if networked)
-//  5. Adjust confidence              -> done inside State.Observe()
-//  6. Decide whether action needed   -> act()
+//  2. Update internal state          -> State.Observe() (adaptive thresholds, if enabled)
+//  3. Share relevant info w/ peers   -> broadcastHeartbeat() (if networked; includes event digests)
+//  4. Receive neighbor updates       -> receiveHeartbeat() (if networked; ingests peer event digests)
+//  5. Adjust confidence              -> done inside State.Observe() / cooperate()
+//  6. Decide whether action needed   -> act() + recordMemory()
 //  7. Return to observation          -> loop
 //
 // Sensing and heartbeating run on independent timers, not the same one.
@@ -122,6 +159,7 @@ func (a *Agent) Run(ctx context.Context) {
 	var incoming <-chan Heartbeat
 	var heartbeatC <-chan time.Time
 	var failureCheckC <-chan time.Time
+	var pictureC <-chan time.Time
 
 	if a.Communicator != nil {
 		incoming = a.Communicator.Listen(ctx)
@@ -139,8 +177,14 @@ func (a *Agent) Run(ctx context.Context) {
 		defer failureCheckTicker.Stop()
 		failureCheckC = failureCheckTicker.C
 	}
+	if a.PictureInterval > 0 {
+		pictureTicker := time.NewTicker(a.PictureInterval)
+		defer pictureTicker.Stop()
+		pictureC = pictureTicker.C
+	}
 	// If a.Communicator is nil, incoming, heartbeatC and failureCheckC stay nil.
-	// A nil channel in a select simply never fires.
+	// A nil channel in a select simply never fires. Same for pictureC when
+	// PictureInterval is 0.
 
 	for {
 		select {
@@ -153,10 +197,13 @@ func (a *Agent) Run(ctx context.Context) {
 			})
 			a.cooperate()
 			a.act()
+			a.recordMemory()
 		case <-heartbeatC:
 			a.broadcastHeartbeat()
 		case <-failureCheckC:
 			a.checkNeighborLiveness()
+		case <-pictureC:
+			log.Print(a.NetworkPicture())
 		case hb, ok := <-incoming:
 			if !ok {
 				incoming = nil // communicator shut down; stop selecting on it
@@ -208,6 +255,7 @@ func (a *Agent) broadcastHeartbeat() {
 		DangerScore: a.State.DangerScore,
 		Timestamp:   time.Now(),
 		KnownPeers:  a.AddressBook.All(),
+		Events:      a.gossipPayload(),
 	}
 
 	targets := make(map[string]bool)
@@ -260,6 +308,10 @@ func (a *Agent) receiveHeartbeat(hb Heartbeat) {
 		}
 	}
 
+	if len(hb.Events) > 0 {
+		a.ingestEvents(hb.Events)
+	}
+
 	log.Printf("[%s] heard from %s: status=%s danger=%.3f",
 		a.State.ID, hb.ID, hb.Status, hb.DangerScore)
 }
@@ -289,6 +341,11 @@ func (a *Agent) cooperate() {
 		return // no networking — cooperation is a no-op
 	}
 
+	// Objective 7: let reputation for peers we haven't heard agreement/
+	// disagreement from in a while relax back toward neutral, before
+	// this tick's fresh signals (if any) reinforce it further below.
+	a.Trust.DecayStale(time.Now())
+
 	all := a.Neighbors.All()
 	if len(all) == 0 {
 		return // no neighbors yet — nothing to cooperate with
@@ -310,4 +367,138 @@ func (a *Agent) cooperate() {
 	// changes this agent's behavior, closing the gap that existed since
 	// Milestone 2.
 	a.State.updateStatusFromCooperative()
+}
+
+// ── Objective 7: episodic memory integration ────────────────────────
+
+// sustainedTicks is how many consecutive ticks an agent must remain in
+// StatusAlert before that episode is upgraded from a one-off EventSpike
+// to an EventSustained. Chosen so a single noisy tick that briefly
+// crosses into ALERT and immediately drops back out is never mistaken
+// for a standing situation.
+const sustainedTicks = 4
+
+// recordMemory turns this tick's status (whichever score decided it —
+// local-only for an unnetworked agent, cooperative once Milestone 5's
+// blending is active) into a semantic Event when something meaningful
+// changed, and prunes memory afterward. This is the answer to
+// Objective 8's "how can raw sensor values become meaningful
+// knowledge?": a status TRANSITION is the smallest fact worth
+// remembering — not every tick, just the ones that meant something.
+func (a *Agent) recordMemory() {
+	if a.Memory == nil {
+		return
+	}
+
+	danger := a.State.DangerScore
+	if a.Trust != nil && a.State.CooperativeDanger > 0 {
+		danger = a.State.CooperativeDanger
+	}
+	now := a.State.LastUpdated
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	curr := a.State.Status
+	switch {
+	case curr == StatusAlert:
+		a.alertStreak++
+		switch {
+		case a.prevStatus != StatusAlert:
+			a.Memory.Record(Event{Timestamp: now, Kind: EventSpike, DangerScore: danger, Note: "entered ALERT"})
+		case a.alertStreak == sustainedTicks && !a.sustainedRecorded:
+			a.Memory.Record(Event{Timestamp: now, Kind: EventSustained, DangerScore: danger, Note: "ALERT sustained"})
+			a.sustainedRecorded = true
+		}
+	case a.prevStatus == StatusAlert:
+		// Left ALERT this tick, for whatever calmer status.
+		a.Memory.Record(Event{Timestamp: now, Kind: EventRecovery, DangerScore: danger, Note: "recovered from ALERT"})
+		a.alertStreak = 0
+		a.sustainedRecorded = false
+	default:
+		a.alertStreak = 0
+		a.sustainedRecorded = false
+	}
+
+	a.Memory.Prune(now)
+	a.prevStatus = curr
+}
+
+// ── Milestone 5 Extended: selective gossip integration ───────────────────────
+
+// gossipPayload assembles this tick's outgoing event digests: this
+// agent's own top-important local events (fresh, Hops=0) plus whatever
+// relay-eligible digests are queued from peers. The relay queue is
+// drained here — anything not sent this tick was already capped by
+// relayQueueLimit, so nothing is silently lost, just delayed to the
+// next heartbeat if the combined payload had to be trimmed.
+func (a *Agent) gossipPayload() []EventDigest {
+	own := SelectForGossip(a.State.ID, a.Memory, time.Now())
+
+	relay := a.relayQueue
+	if len(relay) > maxRelayEvents {
+		relay = relay[:maxRelayEvents]
+	}
+	a.relayQueue = nil
+
+	if len(own) == 0 && len(relay) == 0 {
+		return nil
+	}
+	return append(own, relay...)
+}
+
+// ingestEvents folds received event digests into two places:
+//  1. PeerEvents — this agent's own slice of the network's collective
+//     picture (Milestone 5 Extended), bounded per-origin by peerEventHistoryLimit.
+//  2. relayQueue — candidates for further re-gossip, hop-incremented
+//     and bounded by relayQueueLimit, enabling information to travel
+//     more than one hop without flooding the network (see gossip.go).
+func (a *Agent) ingestEvents(digests []EventDigest) {
+	if a.PeerEvents == nil {
+		a.PeerEvents = make(map[string][]EventDigest)
+	}
+	for _, d := range digests {
+		if d.OriginID == a.State.ID {
+			continue // don't file our own news under "peers"
+		}
+		a.PeerEvents[d.OriginID] = appendBounded(a.PeerEvents[d.OriginID], d, peerEventHistoryLimit)
+	}
+
+	relay := RelayCandidates(a.State.ID, digests)
+	a.relayQueue = append(a.relayQueue, relay...)
+	if len(a.relayQueue) > relayQueueLimit {
+		a.relayQueue = a.relayQueue[len(a.relayQueue)-relayQueueLimit:]
+	}
+}
+
+// NetworkPicture summarizes what THIS agent currently believes is
+// happening across the network — its own, independently-assembled
+// view, built entirely from local memory plus whatever event digests
+// selective gossip has carried to it over time. No two agents'
+// NetworkPicture() calls are guaranteed to agree, and that's not a
+// bug: nobody here has global knowledge (README's core design
+// principle). Useful group-level awareness emerging anyway from these
+// partial, independently-built pictures is precisely PLAN_3's
+// Objective 16/20 question — "what principles create collective
+// intelligence?" — made observable.
+func (a *Agent) NetworkPicture() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[%s] NETWORK PICTURE\n", a.State.ID)
+	fmt.Fprintf(&b, "  own memory: %s\n", a.Memory.Summary(time.Now()))
+
+	if len(a.PeerEvents) == 0 {
+		b.WriteString("  no peer events heard yet")
+		return b.String()
+	}
+
+	for peerID, events := range a.PeerEvents {
+		last := events[len(events)-1]
+		trace := ""
+		if a.Trust != nil {
+			trace = " | " + a.Trust.ReputationTrace(peerID)
+		}
+		fmt.Fprintf(&b, "  %s: %d event(s) heard, most recent=%s (danger=%.3f, hops=%d)%s\n",
+			peerID, len(events), last.Kind, last.DangerScore, last.Hops, trace)
+	}
+	return strings.TrimRight(b.String(), "\n")
 }

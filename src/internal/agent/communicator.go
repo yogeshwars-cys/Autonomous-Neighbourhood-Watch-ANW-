@@ -31,6 +31,15 @@ type Heartbeat struct {
 	Timestamp   time.Time         `json:"timestamp"`
 	KnownPeers  map[string]string `json:"known_peers,omitempty"`
 
+	// Events piggybacks a small, selective batch of event digests —
+	// Objective 7/7's "smarter gossip" (see gossip.go). Exactly the same
+	// tradeoff KnownPeers already made for addresses in Milestone 3,
+	// applied to semantic events instead: a slightly larger packet, in
+	// exchange for situational awareness propagating without any
+	// central collector. Omitted entirely on ticks with nothing worth
+	// sharing, so quiet agents cost the network nothing extra.
+	Events []EventDigest `json:"events,omitempty"`
+
 	// SourceAddr is the UDP address a packet actually arrived from. It
 	// is set locally by Listen() after receipt and is never part of the
 	// wire format (json:"-"). This is deliberate: an agent's reachable

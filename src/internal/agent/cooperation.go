@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"time"
 )
 
 // ── Tuning constants for cooperation ────────────────────────────────
@@ -55,10 +56,35 @@ const (
 type TrustTable struct {
 	mu     sync.RWMutex
 	scores map[string]float64
+
+	// Objective 7 additions — reputation is more than an instantaneous
+	// number. Objective 12 (Reflection) asks "how should trust evolve
+	// after experience?" and Objective 9 (Memory) asks what should be
+	// forgotten. These three maps give trust an actual HISTORY:
+	//
+	//   lastInteraction — when a peer was last reinforced at all. Feeds
+	//   DecayStale (reputation.go): a relationship nobody has touched
+	//   in a while should drift back toward "undecided" rather than
+	//   staying frozen at whatever extreme it last reached — the same
+	//   "let go of what's stale" idea as EpisodicMemory's Prune, applied
+	//   to reputation instead of events.
+	//
+	//   agreements / disagreements — simple running counts, purely for
+	//   EXPLAINABILITY (ReputationTrace). The trust score alone answers
+	//   "how much," these answer "why" — a two-sentence audit trail
+	//   instead of one opaque float.
+	lastInteraction map[string]time.Time
+	agreements      map[string]int
+	disagreements   map[string]int
 }
 
 func NewTrustTable() *TrustTable {
-	return &TrustTable{scores: make(map[string]float64)}
+	return &TrustTable{
+		scores:          make(map[string]float64),
+		lastInteraction: make(map[string]time.Time),
+		agreements:      make(map[string]int),
+		disagreements:   make(map[string]int),
+	}
 }
 
 // TrustOf returns the current trust score for a peer. Unknown peers
@@ -107,7 +133,24 @@ func (t *TrustTable) Reinforce(id string, peerDanger, cooperativeScore float64) 
 		current = maxTrust
 	}
 	t.scores[id] = current
+
+	// Objective 7: record this interaction for reputation history.
+	// reputationCrossover is the same break-even point the delta formula
+	// above already implies (trustGain/(trustGain+trustLoss)) — below it,
+	// this interaction counted as agreement; at or above it, disagreement.
+	t.lastInteraction[id] = time.Now()
+	if normalizedGap < reputationCrossover {
+		t.agreements[id]++
+	} else {
+		t.disagreements[id]++
+	}
 }
+
+// reputationCrossover is trustGain/(trustGain+trustLoss) — the
+// normalized-gap value at which Reinforce's delta is exactly zero.
+// Below it a peer is, on net, being rewarded (an "agreement" for
+// ReputationTrace's purposes); at or above it, penalized.
+const reputationCrossover = trustGain / (trustGain + trustLoss)
 
 // Average returns the mean trust across all tracked peers, or
 // initialTrust if no peers have been tracked yet.

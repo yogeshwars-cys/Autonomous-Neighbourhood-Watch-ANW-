@@ -72,6 +72,22 @@ const (
 	longPatternDuration = 6
 )
 
+// ── Baseline pattern similarity ──────────────────────────────────────
+//
+// During the learning phase, the detector captures abnormal feature
+// shapes the environment naturally produces and stores them as
+// "baseline patterns" — shapes this particular sensor routinely
+// generates that are NOT worth escalating to NovelPattern. After
+// learning, Match checks incoming features against these shapes
+// before falling through to the NovelPattern catch-all.
+//
+// Two feature vectors are "similar enough" when their key shape
+// descriptors are all within baselineTolerance of each other AND
+// they agree on direction (Rising/Falling/Stable). This is
+// deliberately loose — the point is to recognize "I've seen
+// something LIKE this before," not to match exactly.
+const baselineTolerance = 0.10
+
 // PatternTemplate is one recognized "Seen" shape: a name, the EventType
 // it maps to, a pure match predicate, and the confidence assigned on a
 // match. MinConfidence is a fixed constant rather than a computed score
@@ -88,7 +104,8 @@ type PatternTemplate struct {
 // PatternLibrary holds the ordered set of known templates Stage B tries
 // against a FeatureVector.
 type PatternLibrary struct {
-	Templates []PatternTemplate
+	Templates        []PatternTemplate
+	LearnedBaselines []FeatureVector
 }
 
 // DefaultPatternLibrary builds the five built-in "Seen" templates from
@@ -149,14 +166,65 @@ func DefaultPatternLibrary() *PatternLibrary {
 	}}
 }
 
+// RegisterBaselinePattern stores a feature vector as a known-benign
+// shape this environment routinely produces. Called during the
+// learning phase for any abnormal tick that doesn't match a built-in
+// template — "I don't recognize this, but I'm still learning, so
+// I'll remember it rather than panic." Duplicate-ish shapes (within
+// baselineTolerance of an existing entry) are silently ignored to
+// keep the list from growing unboundedly in a noisy environment.
+func (l *PatternLibrary) RegisterBaselinePattern(fv FeatureVector) {
+	for _, existing := range l.LearnedBaselines {
+		if featuresSimilar(existing, fv) {
+			return // close enough to something we already know
+		}
+	}
+	l.LearnedBaselines = append(l.LearnedBaselines, fv)
+}
+
+// featuresSimilar checks whether two feature vectors describe
+// "basically the same shape" — same direction flags and key numeric
+// descriptors within baselineTolerance of each other. Deliberately
+// loose: the point is recognizing a family of shapes, not exact
+// replay.
+func featuresSimilar(a, b FeatureVector) bool {
+	if a.IsRising != b.IsRising || a.IsFalling != b.IsFalling || a.IsStable != b.IsStable {
+		return false
+	}
+	return absClose(a.Slope, b.Slope, baselineTolerance) &&
+		absClose(a.Variance, b.Variance, baselineTolerance) &&
+		absClose(a.MaxDeviation, b.MaxDeviation, baselineTolerance*2)
+}
+
+// absClose reports whether |a - b| <= eps. A production-code
+// equivalent of the test-only floatsClose (detector_test.go), kept
+// here because featuresSimilar is non-test logic that needs it.
+func absClose(a, b, eps float64) bool {
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	return d <= eps
+}
+
 // Match tries every template in order and returns the first one whose
-// predicate matches. The bool return is false only when NO template
-// recognizes the shape — Stage B's signal to the caller (detector.go)
-// that this tick is Unseen (NovelPattern), not Seen.
+// predicate matches. If no built-in template recognizes the shape,
+// learned baseline patterns (captured during the learning phase) are
+// checked before falling through to NovelPattern — a shape the agent
+// saw during calibration is "known-benign noise," not "unknown danger."
+// The bool return is false only when NOTHING recognizes the shape.
 func (l *PatternLibrary) Match(fv FeatureVector) (EventType, float64, bool) {
 	for _, tpl := range l.Templates {
 		if tpl.Match(fv) {
 			return tpl.Type, tpl.MinConfidence, true
+		}
+	}
+	// Check learned baseline patterns before falling through to
+	// NovelPattern — a shape the agent saw during its learning phase
+	// is "known-benign noise," not "unknown danger."
+	for _, baseline := range l.LearnedBaselines {
+		if featuresSimilar(baseline, fv) {
+			return EventBaselinePattern, 0.3, true
 		}
 	}
 	return EventNovelPattern, 0, false

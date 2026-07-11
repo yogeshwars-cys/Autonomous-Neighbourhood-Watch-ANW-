@@ -181,8 +181,16 @@ func TestPatternSuddenDrop(t *testing.T) {
 // TestPatternNovel: an abnormal reading whose shape matches NONE of the
 // five templates must fall through to NovelPattern (Unseen), with
 // maximum confidence — the detector is certain it doesn't recognize this.
+// The history is long enough to exceed novelMinDuration so that
+// duration gating (Option C) doesn't suppress it.
 func TestPatternNovel(t *testing.T) {
-	values := []float64{100, 100, 100, 100, 100, 100, 100, 100, 100, 133}
+	// A gently rising signal: too slow for SustainedSpike (slope <
+	// spikeSteepThreshold=0.15, MaxDeviation < alertThreshold=0.70),
+	// not oscillating (zero crossings = 0), not stable (IsRising =
+	// true, so not Plateau), not a drop, and too short a Duration for
+	// GradualDrift (which needs longPatternDuration=6). Duration is
+	// >= novelMinDuration so the duration gate doesn't suppress it.
+	values := []float64{100, 100, 100, 100, 100, 140, 145, 150, 155}
 	fv := ExtractFeatures(histFrom(values), 100)
 
 	_, _, ok := DefaultPatternLibrary().Match(fv)
@@ -191,10 +199,10 @@ func TestPatternNovel(t *testing.T) {
 	}
 
 	d := NewEventDetector()
-	signal := relativeSignal(133, 100)
-	typ, conf := d.Classify(signal, fv)
+	signal := relativeSignal(155, 100)
+	typ, conf := d.Classify(signal, fv, false)
 	if typ != EventNovelPattern {
-		t.Errorf("expected NovelPattern classification, got %s", typ)
+		t.Errorf("expected NovelPattern classification, got %s (fv=%+v)", typ, fv)
 	}
 	if !floatsClose(conf, 1.0, 1e-9) {
 		t.Errorf("expected confidence 1.0 for a NovelPattern call, got %v", conf)
@@ -205,7 +213,7 @@ func TestPatternNovel(t *testing.T) {
 // isolation: a small signal never even reaches pattern matching.
 func TestClassifyStageANormalBelowWatchThreshold(t *testing.T) {
 	d := NewEventDetector()
-	typ, conf := d.Classify(0.1, FeatureVector{}) // well below watchThreshold=0.30
+	typ, conf := d.Classify(0.1, FeatureVector{}, false) // well below watchThreshold=0.30
 	if typ != EventNormal {
 		t.Errorf("expected Normal classification for a small signal, got %s", typ)
 	}
@@ -286,5 +294,149 @@ func TestEventDetectorUpdateAssignsAgentScopedID(t *testing.T) {
 	}
 	if got, want := ev.ID[:len("node-x-evt-")], "node-x-evt-"; got != want {
 		t.Errorf("event ID = %q, expected prefix %q", ev.ID, want)
+	}
+}
+
+// ── Learning phase ───────────────────────────────────────────────────
+
+// TestLearningPhaseCapturesBaseline checks that during the learning
+// phase, an unrecognized abnormal shape is classified as
+// EventBaselinePattern (low danger) rather than EventNovelPattern
+// (maximum danger), AND the shape is registered in the library so
+// future occurrences outside the learning phase are also recognized.
+func TestLearningPhaseCapturesBaseline(t *testing.T) {
+	d := NewEventDetector()
+	// A shape that doesn't match any built-in template.
+	fv := FeatureVector{
+		Delta: 0.05, Slope: 0.03, Variance: 0.15,
+		Duration: 4, ZeroCrossings: 1, MaxDeviation: 0.40,
+		IsRising: true, IsFalling: false, IsStable: false,
+	}
+	signal := 0.45 // above watchThreshold
+
+	// During learning: should capture as baseline, not novel.
+	typ, conf := d.Classify(signal, fv, true)
+	if typ != EventBaselinePattern {
+		t.Fatalf("during learning, expected BaselinePattern, got %s", typ)
+	}
+	if !floatsClose(conf, 0.3, 1e-9) {
+		t.Errorf("expected confidence 0.3, got %v", conf)
+	}
+	if len(d.Library.LearnedBaselines) != 1 {
+		t.Fatalf("expected 1 learned baseline, got %d", len(d.Library.LearnedBaselines))
+	}
+
+	// After learning: the same shape should still match as baseline,
+	// not fall through to novel.
+	typ2, _ := d.Classify(signal, fv, false)
+	if typ2 != EventBaselinePattern {
+		t.Errorf("after learning, same shape should still match as BaselinePattern, got %s", typ2)
+	}
+}
+
+// TestLearningPhaseDoesNotCaptureDuplicates checks that registering
+// very similar shapes during the learning phase doesn't create
+// duplicate entries — the tolerance check deduplicates them.
+func TestLearningPhaseDoesNotCaptureDuplicates(t *testing.T) {
+	d := NewEventDetector()
+	fv1 := FeatureVector{
+		Delta: 0.05, Slope: 0.03, Variance: 0.15,
+		Duration: 4, ZeroCrossings: 1, MaxDeviation: 0.40,
+		IsRising: true, IsFalling: false, IsStable: false,
+	}
+	// fv2 is within baselineTolerance of fv1.
+	fv2 := FeatureVector{
+		Delta: 0.06, Slope: 0.035, Variance: 0.155,
+		Duration: 5, ZeroCrossings: 2, MaxDeviation: 0.41,
+		IsRising: true, IsFalling: false, IsStable: false,
+	}
+	signal := 0.45
+
+	d.Classify(signal, fv1, true)
+	d.Classify(signal, fv2, true)
+
+	if len(d.Library.LearnedBaselines) != 1 {
+		t.Errorf("expected similar shapes to deduplicate to 1 entry, got %d", len(d.Library.LearnedBaselines))
+	}
+}
+
+// TestLearningPhaseDistinctShapes checks that genuinely different
+// shapes during the learning phase create separate baseline entries.
+func TestLearningPhaseDistinctShapes(t *testing.T) {
+	d := NewEventDetector()
+	fvRising := FeatureVector{
+		Delta: 0.10, Slope: 0.08, Variance: 0.20,
+		Duration: 4, MaxDeviation: 0.50,
+		IsRising: true, IsFalling: false, IsStable: false,
+	}
+	fvFalling := FeatureVector{
+		Delta: -0.10, Slope: -0.08, Variance: 0.20,
+		Duration: 4, MaxDeviation: 0.50,
+		IsRising: false, IsFalling: true, IsStable: false,
+	}
+	signal := 0.45
+
+	d.Classify(signal, fvRising, true)
+	d.Classify(signal, fvFalling, true)
+
+	if len(d.Library.LearnedBaselines) != 2 {
+		t.Errorf("expected 2 distinct baselines, got %d", len(d.Library.LearnedBaselines))
+	}
+}
+
+// ── Duration gating (Option C) ───────────────────────────────────────
+
+// TestDurationGatingSuppressesTransientNovel checks Option C: an
+// abnormal tick with Duration < novelMinDuration that doesn't match
+// any template is downgraded to Normal, not NovelPattern.
+func TestDurationGatingSuppressesTransientNovel(t *testing.T) {
+	d := NewEventDetector()
+	// Short duration, unrecognized shape, NOT in learning mode.
+	fv := FeatureVector{
+		Delta: 0.35, Slope: 0.02, Variance: 0.12,
+		Duration: 1, MaxDeviation: 0.35,
+		IsRising: true, IsFalling: false, IsStable: false,
+	}
+	signal := 0.45
+
+	typ, _ := d.Classify(signal, fv, false)
+	if typ != EventNormal {
+		t.Errorf("expected transient unrecognized blip to be gated to Normal, got %s", typ)
+	}
+}
+
+// TestDurationGatingAllowsSustainedNovel checks that a sustained
+// unrecognized shape (Duration >= novelMinDuration) IS classified
+// as NovelPattern — gating only suppresses transient blips.
+func TestDurationGatingAllowsSustainedNovel(t *testing.T) {
+	d := NewEventDetector()
+	fv := FeatureVector{
+		Delta: 0.35, Slope: 0.02, Variance: 0.12,
+		Duration: novelMinDuration, MaxDeviation: 0.35,
+		IsRising: true, IsFalling: false, IsStable: false,
+	}
+	signal := 0.45
+
+	typ, conf := d.Classify(signal, fv, false)
+	if typ != EventNovelPattern {
+		t.Errorf("expected sustained unrecognized shape to classify as NovelPattern, got %s", typ)
+	}
+	if !floatsClose(conf, 1.0, 1e-9) {
+		t.Errorf("expected confidence 1.0, got %v", conf)
+	}
+}
+
+// TestBaselinePatternDangerWeight confirms that EventBaselinePattern
+// has a much lower danger weight than EventNovelPattern — the whole
+// point of the learning phase is that learned shapes are NOT scary.
+func TestBaselinePatternDangerWeight(t *testing.T) {
+	baselineWeight := eventDangerWeights[EventBaselinePattern]
+	novelWeight := eventDangerWeights[EventNovelPattern]
+	if baselineWeight >= novelWeight {
+		t.Fatalf("baseline weight (%v) should be much lower than novel weight (%v)",
+			baselineWeight, novelWeight)
+	}
+	if !floatsClose(baselineWeight, 0.1, 1e-9) {
+		t.Errorf("expected baseline weight 0.1, got %v", baselineWeight)
 	}
 }

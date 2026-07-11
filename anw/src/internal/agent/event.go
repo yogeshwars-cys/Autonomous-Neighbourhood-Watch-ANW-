@@ -63,6 +63,11 @@ const (
 	EventPlateau
 	EventSuddenDrop
 
+	// ── Baseline: abnormal, but learned during the calibration phase
+	// as a shape this environment routinely produces. Scored low —
+	// familiar noise, not an unknown threat.
+	EventBaselinePattern
+
 	// ── Unseen: abnormal, but no template matched ────────────────────
 	EventNovelPattern
 )
@@ -85,6 +90,8 @@ func (t EventType) String() string {
 		return "plateau"
 	case EventSuddenDrop:
 		return "sudden_drop"
+	case EventBaselinePattern:
+		return "baseline_pattern"
 	case EventNovelPattern:
 		return "novel_pattern"
 	default:
@@ -110,7 +117,7 @@ func (t EventType) IsAbnormal() bool {
 // IsSeen reports whether this is a recognized (templated) abnormal
 // pattern — the "I know what this is" branch of the hierarchy.
 func (t EventType) IsSeen() bool {
-	return t.IsAbnormal() && t != EventNovelPattern
+	return t.IsAbnormal() && t != EventNovelPattern && t != EventBaselinePattern
 }
 
 // IsUnseen reports whether this is abnormal but unrecognized — the "I
@@ -129,6 +136,8 @@ func (t EventType) Category() string {
 	switch {
 	case !t.IsAbnormal():
 		return "Normal"
+	case t == EventBaselinePattern:
+		return "Baseline"
 	case t.IsUnseen():
 		return "Unseen"
 	default:
@@ -146,12 +155,13 @@ func (t EventType) Category() string {
 // has no evidence to support.
 var eventDangerWeights = map[EventType]float64{
 	EventNormal:         0.0,
-	EventSustainedSpike: 0.8,
-	EventOscillation:    0.5,
-	EventGradualDrift:   0.4,
-	EventPlateau:        0.6,
-	EventSuddenDrop:     0.7,
-	EventNovelPattern:   1.0,
+	EventSustainedSpike:  0.8,
+	EventOscillation:     0.5,
+	EventGradualDrift:    0.4,
+	EventPlateau:         0.6,
+	EventSuddenDrop:      0.7,
+	EventBaselinePattern: 0.1,
+	EventNovelPattern:    1.0,
 }
 
 // EventStatus is an Event's position in its own lifecycle — see the

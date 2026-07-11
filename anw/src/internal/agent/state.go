@@ -89,6 +89,18 @@ type State struct {
 	// becomes a memory once it's over" (episodic_memory.go). nil on
 	// every tick nothing resolved.
 	LastResolvedEvent *Event
+
+	// ── Learning Phase ─────────────────────────────────────────────────
+	//
+	// LearningTicksRemaining counts down the agent's initial learning
+	// period. While positive, any abnormal feature shape that doesn't
+	// match an existing template is captured as a baseline pattern in
+	// the detector's library rather than flagged as NovelPattern — the
+	// agent is still calibrating what "normal noise" looks like for THIS
+	// sensor in THIS environment. Zero (the default) means no learning
+	// phase: the agent treats unrecognized shapes as novel immediately,
+	// exactly as Milestone 6 always did.
+	LearningTicksRemaining int
 }
 
 const historyLimit = 50

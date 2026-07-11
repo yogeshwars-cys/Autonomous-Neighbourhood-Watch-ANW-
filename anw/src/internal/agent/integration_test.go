@@ -28,12 +28,11 @@ func (s *scriptedSensor) Read() float64 {
 }
 
 // sustainedSpikeScript is a flat baseline (6 ticks at 100) followed by a
-// steep, sustained climb. Verified by direct simulation against the real
-// detector pipeline: the 11th observation (index 10, value 300) lands
-// exactly inside a SustainedSpike/Active classification. Kept as a
-// package-level fixture so every test below is reasoning about the exact
-// same, hand-verified sequence.
-var sustainedSpikeScript = []float64{100, 100, 100, 100, 100, 100, 140, 180, 220, 260, 300}
+// steep, sustained climb. Extended with extra ticks so the event has
+// enough time to progress through the full Detected → Confirmed → Active
+// lifecycle even with duration gating (novelMinDuration) suppressing
+// the earliest unrecognized ticks.
+var sustainedSpikeScript = []float64{100, 100, 100, 100, 100, 100, 140, 180, 220, 260, 300, 340, 380, 420}
 
 // driveToSustainedSpike replays sustainedSpikeScript through a*State
 // directly (not through Agent.Run()'s wall-clock ticker) so reaching the

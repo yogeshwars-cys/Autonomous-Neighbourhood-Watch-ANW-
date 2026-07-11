@@ -142,6 +142,23 @@ func (a *Agent) WithEvents() *Agent {
 	return a
 }
 
+// WithLearningPhase configures an initial calibration period of ticks
+// ticks during which unrecognized abnormal shapes are captured as
+// baseline patterns rather than flagged as NovelPattern. Requires
+// events to be enabled first (WithEvents) — calling this without
+// WithEvents is harmless but has no effect, since the learning counter
+// is only consulted inside updateEvents (detector.go), which itself
+// only runs when State.Detector != nil.
+//
+// The default (0) means no learning phase: the agent classifies
+// unrecognized shapes as NovelPattern from its very first tick,
+// exactly as Milestone 6 always did. Typical values: 50-200 ticks
+// depending on how noisy the environment is.
+func (a *Agent) WithLearningPhase(ticks int) *Agent {
+	a.State.LearningTicksRemaining = ticks
+	return a
+}
+
 // New creates an agent with empty initial state. Status starts at Calm
 // because an agent with zero observations has no evidence of anything
 // else — defaulting to alarm would mean reacting to ignorance, not to

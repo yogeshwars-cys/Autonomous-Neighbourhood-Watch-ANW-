@@ -22,6 +22,7 @@ func main() {
 	id := flag.String("id", "node-1", "agent identifier")
 	tick := flag.Duration("tick", 500*time.Millisecond, "observation interval")
 	spikeProb := flag.Float64("spike-prob", 0.05, "chance per tick of an injected anomaly")
+	maxTicks := flag.Int("max-ticks", 0, "run for exactly this many ticks and then shut down (0 = run forever)")
 
 	listen := flag.String("listen", "", "UDP address to listen on for peer heartbeats, e.g. :9001 (empty = networking disabled)")
 	peers := flag.String("peers", "", "comma-separated SEED peer UDP addresses (just a bootstrap — more peers are discovered automatically via gossip), e.g. 127.0.0.1:9002")
@@ -33,11 +34,18 @@ func main() {
 	events := flag.Bool("events", false, "Milestone 6 / Objective 8: enable semantic event detection (Normal/Abnormal, Seen/Unseen classification)")
 	eventLogPath := flag.String("event-log", "", "Milestone 6: file path to dump this agent's EventLog to as JSON on shutdown (empty = don't dump)")
 	verboseEvents := flag.Bool("verbose-events", false, "Milestone 6: log a detailed FeatureVector-included line every tick an event is active, in addition to the concise Explain() summary")
+	learningTicks := flag.Int("learning-ticks", 0, "Milestone 6: number of initial ticks during which unrecognized shapes are captured as baseline patterns instead of flagged as novel_pattern (0 = no learning phase)")
 
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	if *maxTicks > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(*maxTicks)*(*tick))
+		defer cancel()
+	}
 
 	sensor := agent.NewSyntheticSensor(10.0, 1.0, *spikeProb, 8.0)
 	a := agent.New(*id, sensor, *tick)
@@ -53,6 +61,10 @@ func main() {
 	if *events {
 		a.WithEvents()
 		a.VerboseEvents = *verboseEvents
+		if *learningTicks > 0 {
+			a.WithLearningPhase(*learningTicks)
+			log.Printf("[%s] learning phase: %d ticks", *id, *learningTicks)
+		}
 		log.Printf("[%s] semantic event detection enabled (verbose=%v)", *id, *verboseEvents)
 	}
 	if *eventLogPath != "" {

@@ -41,6 +41,15 @@ const (
 	// "how long until this counts as over" has one clear answer instead
 	// of an asymptotic curve.
 	cooldownTicks = 3
+
+	// novelMinDuration: minimum trailing abnormal ticks (FeatureVector.
+	// Duration) before an unrecognized shape is classified NovelPattern.
+	// Anything shorter is treated as Normal — a single noisy tick that
+	// happens not to match a template shouldn't immediately trigger the
+	// highest-danger classification. This is Option C of the learning-
+	// phase design: delay novel-pattern classification for transient
+	// blips even OUTSIDE the learning window.
+	novelMinDuration = 3
 )
 
 // EventDetector holds the (stateless, reusable) pattern library used
@@ -73,13 +82,17 @@ func NewEventDetector() *EventDetector {
 //	  confidence — the agent is certain it doesn't know what this is,
 //	  which is itself a confident (if unhappy) conclusion.
 //
-// Deliberately reuses decision.go's existing watchThreshold rather than
-// re-deriving a second Normal/Abnormal cutoff — Stage A is asking
-// exactly the same question decision.go's Status already answers
-// (has this tick's DangerScore contribution crossed into "not calm"),
-// so it uses the same fixed point rather than inventing a
-// differently-tuned duplicate.
-func (d *EventDetector) Classify(signal float64, fv FeatureVector) (EventType, float64) {
+// Learning-phase integration: when learning is true, an unrecognized
+// abnormal shape is captured as a baseline pattern in the library
+// rather than flagged as NovelPattern — the agent is still
+// calibrating what "normal noise" looks like.
+//
+// Duration gating (Option C): even outside the learning phase, an
+// unrecognized shape with fewer than novelMinDuration trailing
+// abnormal ticks is downgraded to Normal rather than immediately
+// triggering the highest-danger NovelPattern — a transient blip
+// that doesn't persist isn't worth the scariest classification.
+func (d *EventDetector) Classify(signal float64, fv FeatureVector, learning bool) (EventType, float64) {
 	if signal < watchThreshold {
 		return EventNormal, 1.0
 	}
@@ -87,6 +100,24 @@ func (d *EventDetector) Classify(signal float64, fv FeatureVector) (EventType, f
 		return t, conf
 	}
 	// Abnormal, but nothing in the library recognized the shape.
+
+	// Learning phase: capture this shape as a baseline pattern rather
+	// than panicking — the agent is still learning what its sensor's
+	// normal noise looks like.
+	if learning {
+		d.Library.RegisterBaselinePattern(fv)
+		return EventBaselinePattern, 0.3
+	}
+
+	// Duration gating (Option C): a transient unrecognized blip that
+	// hasn't persisted for novelMinDuration ticks is more likely sensor
+	// noise than a genuine novel threat. Downgrade to Normal so the
+	// lifecycle doesn't immediately create a max-danger event from a
+	// single noisy tick.
+	if fv.Duration < novelMinDuration {
+		return EventNormal, 1.0
+	}
+
 	return EventNovelPattern, 1.0
 }
 
@@ -181,7 +212,17 @@ func (s *State) updateEvents(obs Observation, signal float64) {
 	s.LastResolvedEvent = nil // pulse: true for at most the current tick
 
 	fv := ExtractFeatures(s.History, s.Baseline)
-	classifiedType, confidence := s.Detector.Classify(signal, fv)
+
+	// Pass learning state to Classify so it can capture baseline
+	// patterns during the learning phase rather than flagging them.
+	learning := s.LearningTicksRemaining > 0
+	classifiedType, confidence := s.Detector.Classify(signal, fv, learning)
+
+	// Decrement the learning counter AFTER classification so the
+	// current tick still benefits from learning-phase behavior.
+	if s.LearningTicksRemaining > 0 {
+		s.LearningTicksRemaining--
+	}
 
 	s.ActiveEvent = s.Detector.Update(s.ActiveEvent, s.ID, classifiedType, confidence, fv, obs.Timestamp)
 

@@ -35,6 +35,7 @@ func main() {
 	eventLogPath := flag.String("event-log", "", "Milestone 6: file path to dump this agent's EventLog to as JSON on shutdown (empty = don't dump)")
 	verboseEvents := flag.Bool("verbose-events", false, "Milestone 6: log a detailed FeatureVector-included line every tick an event is active, in addition to the concise Explain() summary")
 	learningTicks := flag.Int("learning-ticks", 0, "Milestone 6: number of initial ticks during which unrecognized shapes are captured as baseline patterns instead of flagged as novel_pattern (0 = no learning phase)")
+	memorySuppress := flag.Bool("memory-suppress", false, "Milestone 7: enable memory-influenced DangerScore suppression — familiar event patterns get a bounded discount (up to 40%)")
 
 	flag.Parse()
 
@@ -66,6 +67,10 @@ func main() {
 			log.Printf("[%s] learning phase: %d ticks", *id, *learningTicks)
 		}
 		log.Printf("[%s] semantic event detection enabled (verbose=%v)", *id, *verboseEvents)
+	}
+	if *memorySuppress {
+		a.WithMemorySuppress()
+		log.Printf("[%s] memory suppression enabled", *id)
 	}
 	if *eventLogPath != "" {
 		a.EventLogPath = *eventLogPath

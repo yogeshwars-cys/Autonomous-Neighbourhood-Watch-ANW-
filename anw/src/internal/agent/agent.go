@@ -65,6 +65,12 @@ type Agent struct {
 	// network. See memory.go.
 	Memory *EpisodicMemory
 
+	// LongTerm (Milestone 7) is the agent's aggregated statistical
+	// memory — running Welford stats per EventType and a periodic
+	// pattern detector. Always present (initialized in New()), but
+	// only CONSULTED when State.MemorySuppressEnabled is true.
+	LongTerm *LongTermSummary
+
 	// PeerEvents is this agent's independently-assembled slice of the
 	// network's situational picture (Milestone 5 Extended): significant events
 	// heard about each peer, keyed by origin ID, via selective gossip
@@ -159,6 +165,20 @@ func (a *Agent) WithLearningPhase(ticks int) *Agent {
 	return a
 }
 
+// WithMemorySuppress (Milestone 7 / Objective 9) opts this agent into
+// memory-influenced DangerScore suppression: when a new anomaly
+// closely matches something the agent has seen many times before, the
+// final DangerScore gets a bounded discount (up to 40%). Requires
+// events to be enabled (WithEvents) for meaningful classification —
+// without events, all episodes key to EventNormal, and the familiarity
+// engine has nothing to differentiate. Like every other capability in
+// this codebase, this is additive and opt-in.
+func (a *Agent) WithMemorySuppress() *Agent {
+	a.State.MemorySuppressEnabled = true
+	a.State.LongTerm = a.LongTerm
+	return a
+}
+
 // New creates an agent with empty initial state. Status starts at Calm
 // because an agent with zero observations has no evidence of anything
 // else — defaulting to alarm would mean reacting to ignorance, not to
@@ -172,6 +192,7 @@ func New(id string, sensor Sensor, tick time.Duration) *Agent {
 		Sensor:     sensor,
 		Tick:       tick,
 		Memory:     NewEpisodicMemory(),
+		LongTerm:   NewLongTermSummary(),
 		prevStatus: StatusCalm,
 	}
 }
@@ -491,14 +512,14 @@ func (a *Agent) recordMemory() {
 		a.alertStreak++
 		switch {
 		case a.prevStatus != StatusAlert:
-			a.Memory.Record(Episode{Timestamp: now, Kind: EpisodeSpike, DangerScore: danger, Note: "entered ALERT"})
+			a.Memory.Record(Episode{Timestamp: now, Kind: EpisodeSpike, DangerScore: danger, OriginType: a.currentEventType(), Note: "entered ALERT"})
 		case a.alertStreak == sustainedTicks && !a.sustainedRecorded:
-			a.Memory.Record(Episode{Timestamp: now, Kind: EpisodeSustained, DangerScore: danger, Note: "ALERT sustained"})
+			a.Memory.Record(Episode{Timestamp: now, Kind: EpisodeSustained, DangerScore: danger, OriginType: a.currentEventType(), Note: "ALERT sustained"})
 			a.sustainedRecorded = true
 		}
 	case a.prevStatus == StatusAlert:
 		// Left ALERT this tick, for whatever calmer status.
-		a.Memory.Record(Episode{Timestamp: now, Kind: EpisodeRecovery, DangerScore: danger, Note: "recovered from ALERT"})
+		a.Memory.Record(Episode{Timestamp: now, Kind: EpisodeRecovery, DangerScore: danger, OriginType: a.currentEventType(), Note: "recovered from ALERT"})
 		a.alertStreak = 0
 		a.sustainedRecorded = false
 	default:
@@ -521,18 +542,35 @@ func (a *Agent) recordMemory() {
 		// event look equally forgettable regardless of how serious it
 		// was while active. A resolved NovelPattern should still be
 		// remembered as having mattered more than a resolved Plateau.
+		resolvedDanger := eventDangerWeights[resolved.Type]
 		a.Memory.Record(Episode{
 			Timestamp:   resolved.LastSeen,
 			Kind:        EpisodeRecovery,
-			DangerScore: eventDangerWeights[resolved.Type],
+			DangerScore: resolvedDanger,
+			OriginType:  resolved.Type,
 			Note: fmt.Sprintf("%s event resolved: %s (confidence %.2f, lasted %s)",
 				resolved.Type.Category(), resolved.Type, resolved.Confidence,
 				resolved.Duration(resolved.LastSeen).Round(time.Second)),
 		})
+
+		// Milestone 7: feed resolved event into long-term statistics.
+		if a.LongTerm != nil {
+			a.LongTerm.Record(resolved.Type, resolvedDanger, resolved.LastSeen)
+		}
 	}
 
 	a.Memory.Prune(now)
 	a.prevStatus = curr
+}
+// currentEventType returns the currently active EventType if semantic
+// event detection is enabled and an event is live, or EventNormal as
+// the explicit "untyped" bucket for pre-M6 agents and ticks where no
+// event is active.
+func (a *Agent) currentEventType() EventType {
+	if a.State.ActiveEvent != nil {
+		return a.State.ActiveEvent.Type
+	}
+	return EventNormal
 }
 
 // ── Milestone 5 Extended: selective gossip integration ───────────────────────

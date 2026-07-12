@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"math"
 	"time"
 )
@@ -103,10 +104,43 @@ func (s *State) Observe(obs Observation) {
 		s.Adaptive.Update(s.DangerScore)
 	}
 
+	// Milestone 7 (Objective 9): familiarity suppression. Applied
+	// AFTER the event fold (updateEvents above) and adaptive
+	// thresholds, so the max-fold cannot silently override it. If the
+	// current anomaly's EventType closely matches what this agent has
+	// seen many times before, apply a bounded discount (up to 40%).
+	//
+	// The suppression is the very last transform on DangerScore before
+	// status evaluation — documented in the M7 design doc as:
+	// "Familiarity discounts the final DangerScore by up to 40%,
+	// applied after event classification."
+	s.MemoryDiscount = 0
+	if s.MemorySuppressEnabled && s.LongTerm != nil {
+		currentKind := EventNormal
+		if s.ActiveEvent != nil {
+			currentKind = s.ActiveEvent.Type
+		}
+		phi := s.LongTerm.Familiarity(currentKind, s.DangerScore)
+		// Periodic bonus: if this event type is expected around now,
+		// apply maximum suppression regardless of severity match.
+		if s.LongTerm.IsExpected(currentKind, obs.Timestamp) {
+			phi = float64(s.LongTerm.Stat(currentKind).N) / float64(s.LongTerm.Stat(currentKind).N+familiarityMinN)
+		}
+		if phi > 0 {
+			discount := familiarityMaxDiscount * phi
+			s.MemoryDiscount = discount
+			s.DangerScore = clamp(s.DangerScore*(1-discount), 0, 1)
+		}
+	}
+
 	s.updateStatus()
 	s.LastUpdated = obs.Timestamp
 }
 
+// ── Status updates ──────────────────────────────────────────────────
+
+// updateStatus evaluates the final local DangerScore against the
+// agent's thresholds to determine its status.
 func (s *State) updateStatus() {
 	watch, alert := s.effectiveThresholds()
 	switch {
@@ -119,8 +153,10 @@ func (s *State) updateStatus() {
 	}
 }
 
-// Explain returns a short human-readable justification for the agent's
-// current status. The README lists "Explainable behavior" as a design
+// Explain (Milestone 1) gives human-readable insight into the agent's
+// current state. Biological immune cells don't have "black boxes"; they
+// react to specific, inspectable chemical gradients. In a distributed
+// trust network, explainability isn't a feature, it's a structural
 // principle — this is that principle enforced at the type level: there's
 // always a one-line answer to "why do you think that?"
 //
@@ -132,6 +168,11 @@ func (s *State) updateStatus() {
 func (s *State) Explain() string {
 	base := s.Status.String() + ": danger=" +
 		trimFloat(s.DangerScore) + " baseline=" + trimFloat(s.Baseline)
+	
+	if s.MemoryDiscount > 0 {
+		base += fmt.Sprintf(" (familiarity_discount=%d%%)", int(s.MemoryDiscount*100))
+	}
+
 	if s.ActiveEvent != nil {
 		base += " | " + s.ActiveEvent.Explain(time.Now())
 	}

@@ -101,6 +101,28 @@ type State struct {
 	// phase: the agent treats unrecognized shapes as novel immediately,
 	// exactly as Milestone 6 always did.
 	LearningTicksRemaining int
+
+	// ── Milestone 7: Memory-influenced reasoning ────────────────────
+	//
+	// MemorySuppressEnabled, when true, allows the agent's long-term
+	// memory statistics to apply a bounded familiarity discount to the
+	// final DangerScore (up to 40%, applied AFTER the event fold and
+	// adaptive thresholds). Default false — exactly like Adaptive,
+	// Detector, and every other milestone-gated capability: a bare
+	// &State{} behaves identically to Milestones 1-6.
+	MemorySuppressEnabled bool
+
+	// MemoryDiscount tracks the actual discount percentage (0.0 to 0.40)
+	// applied to the DangerScore during the current tick, used strictly
+	// for visibility in Explain().
+	MemoryDiscount float64
+
+	// LongTerm (Milestone 7) is the agent's aggregated statistical
+	// memory — running Welford stats per EventType and a periodic
+	// pattern detector. Nil by default; set by Agent.WithMemorySuppress()
+	// (which also sets MemorySuppressEnabled). Observe() checks both
+	// fields before consulting it.
+	LongTerm *LongTermSummary
 }
 
 const historyLimit = 50

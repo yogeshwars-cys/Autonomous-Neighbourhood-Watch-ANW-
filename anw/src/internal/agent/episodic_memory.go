@@ -84,6 +84,21 @@ type Episode struct {
 	Kind        EpisodeKind
 	DangerScore float64
 	Note        string
+
+	// OriginType (Milestone 7) records which EventType produced this
+	// episode — the rich Milestone 6 classification (sustained_spike,
+	// oscillation, etc.), not the coarse EpisodeKind. Episodes created
+	// via the old status-transition path (agents without WithEvents())
+	// get EventNormal as an explicit "untyped" bucket, never silently
+	// mixed into classified-event statistics.
+	OriginType EventType
+
+	// LastRecalled (Milestone 7) tracks the most recent time this
+	// episode was genuinely matched by the familiarity engine during
+	// a real anomaly. Gossip scans, Summary() calls, and
+	// TopImportant() iterations do NOT update this — only a genuine
+	// pattern match does. Zero value means never recalled.
+	LastRecalled time.Time
 }
 
 // ── Forgetting ──────────────────────────────────────────────────────
@@ -133,7 +148,15 @@ const (
 // A deliberately simple, fully explainable formula — anyone can
 // recompute "why did the agent forget this" by hand.
 func importance(e Episode, now time.Time) float64 {
-	age := now.Sub(e.Timestamp)
+	// Milestone 7: decay from max(Timestamp, LastRecalled) — a
+	// genuinely recalled memory gets a fresh anchor, extending its
+	// lifetime. See the design doc's "recall reinforces memory"
+	// section for why only genuine pattern matches update LastRecalled.
+	anchor := e.Timestamp
+	if e.LastRecalled.After(anchor) {
+		anchor = e.LastRecalled
+	}
+	age := now.Sub(anchor)
 	if age < 0 {
 		age = 0
 	}

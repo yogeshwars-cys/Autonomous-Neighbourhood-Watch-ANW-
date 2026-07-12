@@ -1,0 +1,5 @@
+src/agent
+src/m6-logs.zip
+src/m6-logs/
+*.exe
+*.log
